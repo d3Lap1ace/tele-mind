@@ -14,7 +14,9 @@
     "pm2:logs": "pm2 logs tele-mind",
     "pm2:monit": "pm2 monit",
     "lint": "eslint src --ext .ts",
-    "format": "prettier --write \"src/**/*.ts\""
+    "format": "prettier --write \"src/**/*.ts\"",
+    "security-check": "./scripts/security-check.sh",
+    "setup-hooks": "./scripts/setup-hooks.sh"
   },
   "keywords": [
     "telegram",
