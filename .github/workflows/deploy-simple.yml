@@ -1,0 +1,110 @@
+name: Deploy to EC2 (Simple)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '20'
+  APP_NAME: tele-mind
+  DEPLOY_USER: admin
+  DEPLOY_PATH: /opt/tele-mind
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Security check
+        run: |
+          chmod +x ./scripts/security-check.sh
+          ./scripts/security-check.sh
+
+  deploy:
+    name: Deploy to EC2
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install & Build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to Server
+        run: |
+          # Create deployment package
+          tar -czf /tmp/app.tar.gz \
+            dist/ \
+            package.json \
+            package-lock.json \
+            ecosystem.config.js \
+            .env.example
+
+          # Upload to server
+          scp -i ~/.ssh/deploy_key /tmp/app.tar.gz \
+            ${{ env.DEPLOY_USER }}@${{ secrets.EC2_HOST }}:/tmp/
+
+          # Deploy
+          ssh -i ~/.ssh/deploy_key ${{ env.DEPLOY_USER }}@${{ secrets.EC2_HOST }} << 'ENDSSH'
+            set -e
+            cd ${{ env.DEPLOY_PATH }}
+
+            # Backup
+            [ -d dist ] && sudo mkdir -p backups && \
+              sudo tar -czf backups/backup-$(date +%Y%m%d-%H%M%S).tar.gz dist/
+
+            # Stop service
+            pm2 stop ${{ env.APP_NAME }} || true
+
+            # Extract
+            sudo tar -xzf /tmp/app.tar.gz -C ${{ env.DEPLOY_PATH }}
+            sudo chown -R $USER:$USER ${{ env.DEPLOY_PATH }}
+
+            # Install deps
+            npm ci --production
+
+            # Start service
+            pm2 restart ${{ env.APP_NAME }} || pm2 start ecosystem.config.js
+
+            # Cleanup
+            rm -f /tmp/app.tar.gz
+          ENDSSH
+
+      - name: Health Check
+        run: |
+          sleep 5
+          curl -f http://${{ secrets.EC2_HOST }}:3000/health || exit 1
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

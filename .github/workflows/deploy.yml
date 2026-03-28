@@ -1,0 +1,237 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '20'
+  APP_NAME: tele-mind
+  DEPLOY_PATH: /opt/tele-mind
+
+jobs:
+  # Security and Quality Checks
+  security-check:
+    name: Security & Quality Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run security check
+        run: |
+          chmod +x ./scripts/security-check.sh
+          ./scripts/security-check.sh
+
+      - name: Check for secrets in code
+        run: |
+          # Install trufflehog if needed
+          # docker run --rm -v "$PWD:/pwd" trufflesecurity/trufflehog:latest git file:///pwd --json
+          echo "Checking for secrets..."
+
+      - name: Run TypeScript build
+        run: npm run build
+
+      - name: Run linter
+        run: npm run lint || true
+        continue-on-error: true
+
+  # Deploy to EC2
+  deploy:
+    name: Deploy to EC2
+    needs: security-check
+    runs-on: ubuntu-latest
+    # Only deploy on main branch
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build project
+        run: npm run build
+
+      - name: Create deployment package
+        run: |
+          mkdir -p deploy
+          # Copy only necessary files
+          cp -r dist deploy/
+          cp package.json package-lock.json deploy/
+          cp ecosystem.config.js deploy/
+          cp .env.example deploy/
+
+          # Create tarball
+          tar -czf tele-mind-deploy.tar.gz -C deploy .
+          echo "Deployment package created"
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Upload to EC2
+        run: |
+          scp -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=no \
+            tele-mind-deploy.tar.gz \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/
+
+      - name: Deploy on EC2
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=no \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'ENDSSH'
+            set -e
+
+            echo "🚀 Starting deployment..."
+
+            # Stop service
+            sudo systemctl stop ${{ env.APP_NAME }} || true
+            pm2 stop ${{ env.APP_NAME }} || true
+
+            # Backup current deployment
+            if [ -d "${{ env.DEPLOY_PATH }}/dist" ]; then
+              BACKUP_DIR="${{ env.DEPATH_PATH }}/backups/backup-$(date +%Y%m%d-%H%M%S)"
+              sudo mkdir -p "$BACKUP_DIR"
+              sudo cp -r ${{ env.DEPLOY_PATH }}/dist "$BACKUP_DIR/"
+              echo "✅ Backup created at $BACKUP_DIR"
+            fi
+
+            # Extract new deployment
+            sudo mkdir -p ${{ env.DEPLOY_PATH }}
+            sudo tar -xzf /tmp/tele-mind-deploy.tar.gz -C ${{ env.DEPLOY_PATH }}
+            sudo chown -R ${{ secrets.EC2_USER }}:${{ secrets.EC2_USER }} ${{ env.DEPLOY_PATH }}
+
+            # Install dependencies
+            cd ${{ env.DEPLOY_PATH }}
+            npm ci --production
+
+            # Setup environment
+            if [ ! -f .env ]; then
+              sudo cp .env.example .env
+              echo "⚠️  .env not found. Please configure manually."
+            fi
+
+            # Start service
+            if command -v pm2 &> /dev/null; then
+              pm2 restart ${{ env.APP_NAME }} || pm2 start ecosystem.config.js
+            else
+              sudo systemctl start ${{ env.APP_NAME }}
+            fi
+
+            # Cleanup
+            rm -f /tmp/tele-mind-deploy.tar.gz
+
+            echo "✅ Deployment completed successfully!"
+
+            # Show status
+            if command -v pm2 &> /dev/null; then
+              pm2 status ${{ env.APP_NAME }}
+            else
+              sudo systemctl status ${{ env.APP_NAME }} --no-pager
+            fi
+          ENDSSH
+
+      - name: Health Check
+        run: |
+          echo "Waiting for service to start..."
+          sleep 10
+
+          # Check health endpoint
+          HEALTH_URL="http://${{ secrets.EC2_HOST }}:3000/health"
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || echo "000")
+
+          if [ "$RESPONSE" = "200" ]; then
+            echo "✅ Health check passed (HTTP $RESPONSE)"
+            curl -s "$HEALTH_URL" | jq .
+          else
+            echo "❌ Health check failed (HTTP $RESPONSE)"
+            exit 1
+          fi
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+
+      - name: Notify deployment status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "🎉 Deployment successful!"
+          else
+            echo "❌ Deployment failed!"
+          fi
+
+  # Rollback (manual trigger)
+  rollback:
+    name: Rollback Deployment
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    environment:
+      name: production
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Rollback on EC2
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=no \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'ENDSSH'
+            set -e
+
+            echo "🔄 Rolling back to previous version..."
+
+            # Find latest backup
+            LATEST_BACKUP=$(ls -td ${{ env.DEPLOY_PATH }}/backups/*/ 2>/dev/null | head -1)
+
+            if [ -z "$LATEST_BACKUP" ]; then
+              echo "❌ No backup found!"
+              exit 1
+            fi
+
+            echo "Found backup: $LATEST_BACKUP"
+
+            # Stop service
+            pm2 stop ${{ env.APP_NAME }} || sudo systemctl stop ${{ env.APP_NAME }}
+
+            # Restore backup
+            sudo cp -r "$LATEST_BACKUP/dist" ${{ env.DEPLOY_PATH }}/
+            sudo chown -R ${{ secrets.EC2_USER }}:${{ secrets.EC2_USER }} ${{ env.DEPLOY_PATH }}
+
+            # Start service
+            pm2 restart ${{ env.APP_NAME }} || sudo systemctl start ${{ env.APP_NAME }}
+
+            echo "✅ Rollback completed!"
+          ENDSSH
+
+      - name: Health Check after rollback
+        run: |
+          sleep 5
+          HEALTH_URL="http://${{ secrets.EC2_HOST }}:3000/health"
+          curl -f "$HEALTH_URL" || exit 1

@@ -175,9 +175,23 @@ sudo ufw enable
 
 ## 3. Git 仓库安全
 
-### 3.1 GitHub Secrets 设置（如需 CI/CD）
+### 3.1 GitHub Secrets 设置（CI/CD）
 
 **GitHub → Settings → Secrets and variables → Actions:**
+
+#### 部署所需 Secrets
+
+| Secret 名称 | 描述 | 示例值 |
+|------------|------|--------|
+| `EC2_HOST` | EC2 服务器 IP 或域名 | `ec2-xxx.compute.amazonaws.com` |
+| `EC2_USER` | SSH 登录用户 | `admin` |
+| `EC2_SSH_PRIVATE_KEY` | SSH 私钥（完整内容） | `-----BEGIN OPENSSH PRIVATE KEY-----...` |
+
+⚠️ **重要**: `EC2_SSH_PRIVATE_KEY` 应该包含完整的私钥文件内容，包括 BEGIN/END 标记和换行。
+
+#### 应用密钥 Secrets（可选）
+
+如需在 CI/CD 中传递 API 密钥：
 
 | Secret 名称 | 描述 |
 |------------|------|
@@ -185,15 +199,42 @@ sudo ufw enable
 | `OPENAI_API_KEY` | OpenAI API Key |
 | `ANTHROPIC_API_KEY` | Anthropic API Key |
 
+**建议**: 生产环境密钥直接在服务器上配置，不要通过 GitHub Actions 传递。
+
 ### 3.2 分支保护
 
-```bash
-# 或在 GitHub 设置中：
-# Settings → Branches → Add rule
-# - 保护 main 分支
-# - 要求 PR review
-# - 禁止直接推送
-```
+**推荐配置（在 GitHub 设置中）：**
+
+`Settings → Branches → Add rule`
+
+- ✅ 保护 `main` 分支
+- ✅ 要求 PR review（至少 1 人）
+- ✅ 要求状态检查通过（CI/CD 测试）
+- ✅ 禁止直接推送
+- ✅ 要求线性历史记录
+
+### 3.3 GitHub Actions 安全
+
+**使用环境保护生产部署：**
+
+1. 创建环境：`Settings → Environments → New environment`
+   - 名称: `production`
+   - 添加保护规则：要求等待期、受限制的环境
+
+2. 更新 workflow 使用环境：
+   ```yaml
+   deploy:
+     environment: production
+     runs-on: ubuntu-latest
+     # ...
+   ```
+
+**限制 GitHub Actions 权限：**
+
+在 `Settings → Actions → General`：
+- ✅ 读取和写入权限（根据需要）
+- ✅ 允许 GitHub Actions 创建和批准 PR
+- ❌ 禁用工作流重新运行（如需严格控制）
 
 ### 3.3 提交前检查
 
@@ -297,6 +338,16 @@ docker run --rm -v "$PWD:/pwd" zricethezav/gitleaks:latest detect --source /pwd 
 - [ ] 设置了密钥轮换计划
 - [ ] 团队成员知晓安全规范
 - [ ] 有应急处理预案
+
+### CI/CD 额外检查
+
+- [ ] GitHub Secrets 已正确配置
+- [ ] SSH 密钥仅用于 GitHub Actions
+- [ ] 服务器已运行安全加固脚本
+- [ ] 分支保护规则已启用
+- [ ] 生产环境需要手动批准
+- [ ] Fail2Ban 已启用防止暴力破解
+- [ ] 自动安全更新已配置
 
 ---
 
