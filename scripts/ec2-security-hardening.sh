@@ -58,20 +58,22 @@ log_success "System updated"
 # ============================================
 log_info "Step 2: Creating non-root user..."
 
-ADMIN_USER="admin"
-if ! id "$ADMIN_USER" &>/dev/null; then
-    adduser --disabled-password --gecos "" "$ADMIN_USER"
-    usermod -aG sudo "$ADMIN_USER"
+DEPLOY_USER="deploy"
+if ! id "$DEPLOY_USER" &>/dev/null; then
+    adduser --disabled-password --gecos "" "$DEPLOY_USER"
+    usermod -aG sudo "$DEPLOY_USER"
 
-    # Setup sudo without password for specific commands
-    echo "$ADMIN_USER ALL=(ALL) NOPASSWD:/usr/bin/systemctl restart tele-mind,/usr/bin/systemctl status tele-mind,/usr/bin/npm" >> /etc/sudoers.d/telebot
-    chmod 440 /etc/sudoers.d/telebot
-
-    log_success "User $ADMIN_USER created"
-    log_warn "Please set a password for $ADMIN_USER: sudo passwd $ADMIN_USER"
+    log_success "User $DEPLOY_USER created"
+    log_warn "Please set a password for $DEPLOY_USER: sudo passwd $DEPLOY_USER"
 else
-    log_warn "User $ADMIN_USER already exists"
+    log_warn "User $DEPLOY_USER already exists"
 fi
+
+# Setup sudo without password for deployment commands
+cat > /etc/sudoers.d/github-deploy << EOF
+$DEPLOY_USER ALL=(ALL) NOPASSWD:/usr/bin/systemctl start tele-mind,/usr/bin/systemctl stop tele-mind,/usr/bin/systemctl restart tele-mind,/usr/bin/systemctl status tele-mind,/usr/bin/chown,/usr/bin/mkdir,/usr/bin/cp,/usr/bin/tar,/usr/bin/npm
+EOF
+chmod 440 /etc/sudoers.d/github-deploy
 
 # ============================================
 # 3. SSH Hardening
@@ -117,8 +119,8 @@ PermitTunnel no
 GatewayPorts no
 
 # Allow users
-AllowUsers admin ubuntu
-# AllowUsers admin ubuntu telebot  # Add telebot if needed
+AllowUsers deploy ubuntu
+# AllowUsers deploy ubuntu telebot  # Add telebot if needed
 
 # Use DNS no
 UseDNS no
@@ -152,7 +154,7 @@ systemctl restart sshd
 
 log_success "SSH hardened"
 log_warn "⚠️  Password authentication disabled. Make sure you have SSH key access!"
-log_warn "⚠️  Root login disabled. Use user '$ADMIN_USER' instead"
+log_warn "⚠️  Root login disabled. Use user '$DEPLOY_USER' instead"
 
 # ============================================
 # 4. Firewall Configuration
@@ -327,7 +329,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 echo "Summary of changes:"
 echo "  ✅ System packages updated"
-echo "  ✅ Non-root user '$ADMIN_USER' created"
+echo "  ✅ Non-root user '$DEPLOY_USER' created"
 echo "  ✅ SSH hardened (no password, no root login)"
 echo "  ✅ Firewall (UFW) enabled"
 echo "  ✅ Fail2Ban installed"
@@ -337,9 +339,9 @@ echo "  ✅ Security tools installed"
 echo "  ✅ Log rotation configured"
 echo ""
 log_warn "IMPORTANT: Next Steps"
-echo "  1. Add your SSH public key to /home/$ADMIN_USER/.ssh/authorized_keys"
-echo "  2. Set password for $ADMIN_USER: sudo passwd $ADMIN_USER"
-echo "  3. Test SSH login with: ssh $ADMIN_USER@$(hostname -I | awk '{print $1}')"
+echo "  1. Add your SSH public key to /home/$DEPLOY_USER/.ssh/authorized_keys"
+echo "  2. Set password for $DEPLOY_USER: sudo passwd $DEPLOY_USER"
+echo "  3. Test SSH login with: ssh $DEPLOY_USER@$(hostname -I | awk '{print $1}')"
 echo "  4. Disconnect and verify root login is disabled"
 echo "  5. Check Fail2Ban status: sudo fail2ban-client status sshd"
 echo ""

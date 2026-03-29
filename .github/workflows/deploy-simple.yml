@@ -8,7 +8,7 @@ on:
 env:
   NODE_VERSION: '20'
   APP_NAME: tele-mind
-  DEPLOY_USER: admin
+  DEPLOY_USER: deploy
   DEPLOY_PATH: /opt/tele-mind
 
 jobs:
