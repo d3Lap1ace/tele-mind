@@ -1,8 +1,6 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { getConfig } from '../config';
 import { logger } from '../logger';
-import { getTelegramBotService } from '../telegram/bot';
-import { getLLMClient } from '../llm/client';
 import { getConversationService } from '../services/conversation';
 
 /**
@@ -11,7 +9,7 @@ import { getConversationService } from '../services/conversation';
  */
 class HealthCheckServer {
   private app: express.Application;
-  private server: ReturnType<typeof express.app.listen> | null = null;
+  private server: any = null;
   private port: number;
   private host: string;
 
@@ -48,7 +46,7 @@ class HealthCheckServer {
    */
   private setupRoutes(): void {
     // Health check endpoint
-    this.app.get('/health', (req: Request, res: Response) => {
+    this.app.get('/health', (_req: Request, res: Response) => {
       const health = {
         status: 'healthy',
         timestamp: new Date().toISOString(),
@@ -61,7 +59,7 @@ class HealthCheckServer {
     });
 
     // Detailed health check endpoint
-    this.app.get('/health/detailed', async (req: Request, res: Response) => {
+    this.app.get('/health/detailed', async (_req: Request, res: Response) => {
       try {
         const conversationStats = getConversationService().getStats();
         const config = getConfig();
@@ -109,7 +107,7 @@ class HealthCheckServer {
     });
 
     // Readiness probe endpoint
-    this.app.get('/ready', (req: Request, res: Response) => {
+    this.app.get('/ready', (_req: Request, res: Response) => {
       // Check if critical services are ready
       const isReady = true; // Add actual readiness checks if needed
 
@@ -121,21 +119,21 @@ class HealthCheckServer {
     });
 
     // Liveness probe endpoint
-    this.app.get('/live', (req: Request, res: Response) => {
+    this.app.get('/live', (_req: Request, res: Response) => {
       // Check if the application is alive
       res.status(200).json({ status: 'alive' });
     });
 
     // 404 handler
-    this.app.use((req: Request, res: Response) => {
+    this.app.use((_req: Request, res: Response) => {
       res.status(404).json({
         error: 'Not Found',
-        path: req.path,
+        path: _req.path,
       });
     });
 
     // Error handler
-    this.app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
+    this.app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
       logger.error({ error: err, path: req.path }, 'HTTP request error');
 
       res.status(500).json({

@@ -1,5 +1,4 @@
 import type { CommandHandler, TelegramMessage } from '../types';
-import { getWhitelistService } from '../../services/whitelist';
 import { logger } from '../../logger';
 
 /**

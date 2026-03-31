@@ -2,7 +2,7 @@ import TelegramBot from 'node-telegram-bot-api';
 import { getConfig } from '../config';
 import { logger } from '../logger';
 import { getWhitelistService } from '../services/whitelist';
-import { commands, getCommand } from './commands';
+import { getCommand } from './commands';
 import { handleMessage } from './handlers/message';
 import type { TelegramUpdate } from './types';
 
@@ -30,12 +30,12 @@ class TelegramBotService {
       throw new Error('TELEGRAM_BOT_TOKEN is required');
     }
 
-    // Create bot instance with polling
+    // Create bot instance with polling disabled
     this.bot = new TelegramBot(token, {
       polling: false, // We'll start polling manually
     });
 
-    logger.info({ botUsername: this.bot.options.username }, 'Telegram Bot initialized');
+    logger.info('Telegram Bot initialized');
   }
 
   /**
@@ -72,11 +72,36 @@ class TelegramBotService {
     });
 
     this.bot.on('message', async (msg) => {
-      await this.handleUpdate({ updateId: 0, message: msg } as TelegramUpdate);
+      if (!msg.from || !msg.from.first_name) return; // Skip messages without required user info
+
+      const update: TelegramUpdate = {
+        updateId: 0,
+        message: {
+          messageId: msg.message_id,
+          from: {
+            id: msg.from.id,
+            firstName: msg.from.first_name,
+            lastName: msg.from.last_name,
+            username: msg.from.username,
+            languageCode: msg.from.language_code,
+          },
+          chat: {
+            id: msg.chat.id,
+            type: msg.chat.type,
+            title: msg.chat.title,
+            username: msg.chat.username,
+            firstName: msg.chat.first_name,
+            lastName: msg.chat.last_name,
+          },
+          date: msg.date,
+          text: msg.text,
+        },
+      };
+      await this.handleUpdate(update);
     });
 
-    // Start polling
-    await this.bot.startPolling(options);
+    // Start polling (cast to any to avoid type mismatch)
+    await this.bot.startPolling({ restart: true } as any);
     this.isPolling = true;
 
     logger.info('Bot polling started successfully');
@@ -180,7 +205,7 @@ class TelegramBotService {
   /**
    * Get bot information
    */
-  async getBotInfo(): Promise<TelegramBot.GetMeResult> {
+  async getBotInfo(): Promise<any> {
     return await this.getBot().getMe();
   }
 

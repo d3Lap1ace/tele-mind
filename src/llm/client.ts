@@ -1,4 +1,5 @@
 import axios, { type AxiosInstance, type AxiosError } from 'axios';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getConfig } from '../config';
 import {
   type Message,
@@ -15,7 +16,8 @@ import {
  * Abstracts different LLM providers behind a unified interface
  */
 export class LLMClient {
-  private client: AxiosInstance;
+  private client?: AxiosInstance;
+  private geminiClient?: GoogleGenerativeAI;
   private provider: string;
   private model: string;
   private maxTokens: number;
@@ -34,7 +36,27 @@ export class LLMClient {
     this.maxRetries = config.LLM_MAX_RETRIES;
     this.retryDelay = config.LLM_RETRY_DELAY;
 
-    // Configure axios instance based on provider
+    // Initialize client based on provider
+    if (this.provider === 'google') {
+      this.initializeGemini(config);
+    } else {
+      this.initializeAxios(config);
+    }
+
+    // Set model based on provider
+    this.model = this.getModelName(config);
+  }
+
+  private initializeGemini(config: ReturnType<typeof getConfig>): void {
+    if (!config.GEMINI_API_KEY) {
+      throw new LLMAuthenticationError('GEMINI_API_KEY is required for Google provider');
+    }
+    this.geminiClient = new GoogleGenerativeAI(config.GEMINI_API_KEY);
+    this.maxTokens = config.GEMINI_MAX_TOKENS;
+    this.temperature = config.GEMINI_TEMPERATURE;
+  }
+
+  private initializeAxios(_config: ReturnType<typeof getConfig>): void {
     const baseURL = this.getBaseURL();
     const headers = this.getHeaders();
 
@@ -43,9 +65,6 @@ export class LLMClient {
       headers,
       timeout: this.timeout,
     });
-
-    // Set model based on provider
-    this.model = this.getModelName(config);
   }
 
   private getBaseURL(): string {
@@ -96,38 +115,10 @@ export class LLMClient {
         return config.ANTHROPIC_MODEL;
       case 'azure':
         return config.AZURE_OPENAI_DEPLOYMENT!;
+      case 'google':
+        return config.GEMINI_MODEL;
       default:
         return 'unknown';
-    }
-  }
-
-  /**
-   * Convert messages to provider-specific format
-   */
-  private formatMessages(messages: Message[]): any {
-    switch (this.provider) {
-      case 'openai':
-      case 'azure':
-        return messages.map((m) => ({
-          role: m.role,
-          content: m.content,
-        }));
-
-      case 'anthropic':
-        // Anthropic requires system message to be separate
-        const systemMsg = messages.find((m) => m.role === 'system');
-        const conversation = messages.filter((m) => m.role !== 'system');
-
-        return {
-          system: systemMsg?.content || '',
-          messages: conversation.map((m) => ({
-            role: m.role,
-            content: m.content,
-          })),
-        };
-
-      default:
-        return messages;
     }
   }
 
@@ -162,6 +153,141 @@ export class LLMClient {
       default:
         throw new LLMError(`Unsupported provider: ${this.provider}`);
     }
+  }
+
+  /**
+   * Convert messages to Gemini format
+   */
+  private convertToGeminiMessages(messages: Message[]): Array<{ role: string; parts: Array<{ text: string }> }> {
+    return messages
+      .filter((m) => m.role !== 'system')
+      .map((m) => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      }));
+  }
+
+  /**
+   * Extract system prompt from messages
+   */
+  private extractSystemPrompt(messages: Message[]): string | undefined {
+    const systemMsg = messages.find((m) => m.role === 'system');
+    return systemMsg?.content;
+  }
+
+  /**
+   * Make LLM API call with retry logic
+   */
+  async chat(options: LLMRequestOptions): Promise<LLMResponse> {
+    if (this.provider === 'google') {
+      return this.chatWithGemini(options);
+    }
+    return this.chatWithAxios(options);
+  }
+
+  /**
+   * Chat using Gemini SDK
+   */
+  private async chatWithGemini(options: LLMRequestOptions): Promise<LLMResponse> {
+    const config = getConfig();
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      try {
+        if (!this.geminiClient) {
+          throw new LLMAuthenticationError('Gemini client not initialized');
+        }
+
+        const model = this.geminiClient.getGenerativeModel({
+          model: this.model,
+          systemInstruction: this.extractSystemPrompt(options.messages) || config.LLM_SYSTEM_PROMPT,
+        });
+
+        const chatSession = model.startChat({
+          history: this.convertToGeminiMessages(options.messages.slice(0, -1)),
+          generationConfig: {
+            maxOutputTokens: options.maxTokens || this.maxTokens,
+            temperature: options.temperature ?? this.temperature,
+          },
+        });
+
+        const lastMessage = options.messages[options.messages.length - 1];
+        const result = await chatSession.sendMessage(lastMessage.content);
+        const response = await result.response;
+        const content = response.text();
+
+        return {
+          content,
+          model: this.model,
+          usage: {
+            promptTokens: response.usageMetadata?.promptTokenCount || 0,
+            completionTokens: response.usageMetadata?.candidatesTokenCount || 0,
+            totalTokens: response.usageMetadata?.totalTokenCount || 0,
+          },
+        };
+      } catch (error) {
+        lastError = this.handleError(error);
+
+        // Don't retry on authentication errors
+        if (lastError instanceof LLMAuthenticationError) {
+          throw lastError;
+        }
+
+        // Don't retry on the last attempt
+        if (attempt < this.maxRetries) {
+          // Exponential backoff
+          const delay = this.retryDelay * Math.pow(2, attempt);
+          await this.sleep(delay);
+        }
+      }
+    }
+
+    throw lastError || new LLMError('Max retries exceeded');
+  }
+
+  /**
+   * Chat using Axios (for OpenAI, Anthropic, Azure)
+   */
+  private async chatWithAxios(options: LLMRequestOptions): Promise<LLMResponse> {
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      try {
+        if (!this.client) {
+          throw new LLMError('Axios client not initialized');
+        }
+
+        const payload = this.buildPayload(options);
+        const endpoint = this.getEndpoint();
+
+        const response = await this.client.post(endpoint, payload);
+
+        const content = this.extractResponse(response.data);
+        const usage = this.extractUsage(response.data);
+
+        return {
+          content,
+          model: this.model,
+          usage,
+        };
+      } catch (error) {
+        lastError = this.handleError(error);
+
+        // Don't retry on authentication errors
+        if (lastError instanceof LLMAuthenticationError) {
+          throw lastError;
+        }
+
+        // Don't retry on the last attempt
+        if (attempt < this.maxRetries) {
+          // Exponential backoff
+          const delay = this.retryDelay * Math.pow(2, attempt);
+          await this.sleep(delay);
+        }
+      }
+    }
+
+    throw lastError || new LLMError('Max retries exceeded');
   }
 
   /**
@@ -224,47 +350,6 @@ export class LLMClient {
   }
 
   /**
-   * Make LLM API call with retry logic
-   */
-  async chat(options: LLMRequestOptions): Promise<LLMResponse> {
-    let lastError: Error | null = null;
-
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      try {
-        const payload = this.buildPayload(options);
-        const endpoint = this.getEndpoint();
-
-        const response = await this.client.post(endpoint, payload);
-
-        const content = this.extractResponse(response.data);
-        const usage = this.extractUsage(response.data);
-
-        return {
-          content,
-          model: this.model,
-          usage,
-        };
-      } catch (error) {
-        lastError = this.handleError(error);
-
-        // Don't retry on authentication errors
-        if (lastError instanceof LLMAuthenticationError) {
-          throw lastError;
-        }
-
-        // Don't retry on the last attempt
-        if (attempt < this.maxRetries) {
-          // Exponential backoff
-          const delay = this.retryDelay * Math.pow(2, attempt);
-          await this.sleep(delay);
-        }
-      }
-    }
-
-    throw lastError || new LLMError('Max retries exceeded');
-  }
-
-  /**
    * Get API endpoint for provider
    */
   private getEndpoint(): string {
@@ -286,6 +371,26 @@ export class LLMClient {
    * Handle and classify errors from API calls
    */
   private handleError(error: unknown): LLMError {
+    // Handle Gemini errors
+    if (error instanceof Error) {
+      const errorMessage = error.message.toLowerCase();
+
+      if (errorMessage.includes('timeout') || errorMessage.includes('timed out')) {
+        return new LLMTimeoutError('Request timeout');
+      }
+
+      if (errorMessage.includes('quota') || errorMessage.includes('rate limit') || errorMessage.includes('429')) {
+        return new LLMRateLimitError('Rate limit exceeded');
+      }
+
+      if (errorMessage.includes('api key') || errorMessage.includes('authentication') || errorMessage.includes('401')) {
+        return new LLMAuthenticationError('Invalid API key or authentication failed');
+      }
+
+      return new LLMError(error.message);
+    }
+
+    // Handle Axios errors
     if (axios.isAxiosError(error)) {
       const axiosError = error as AxiosError<any>;
 

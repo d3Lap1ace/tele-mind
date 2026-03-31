@@ -43,7 +43,7 @@ export function createLogger(module: string = 'app') {
             translateTime: 'HH:MM:ss Z',
             ignore: 'pid,hostname',
             colorize: true,
-            messageFormat: (log) => sanitize(log.msg as string),
+            messageFormat: (log: { msg: unknown }) => sanitize(log.msg as string),
           },
         },
       },

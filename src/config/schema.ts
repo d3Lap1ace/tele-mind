@@ -9,8 +9,8 @@ export const configSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(1, 'Telegram bot token is required'),
 
   // LLM Provider
-  LLM_PROVIDER: z.enum(['openai', 'anthropic', 'azure'], {
-    errorMap: () => ({ message: 'LLM provider must be one of: openai, anthropic, azure' }),
+  LLM_PROVIDER: z.enum(['openai', 'anthropic', 'azure', 'google'], {
+    errorMap: () => ({ message: 'LLM provider must be one of: openai, anthropic, azure, google' }),
   }),
 
   // OpenAI Configuration
@@ -31,6 +31,12 @@ export const configSchema = z.object({
   AZURE_OPENAI_ENDPOINT: z.string().url().optional(),
   AZURE_OPENAI_DEPLOYMENT: z.string().optional(),
   AZURE_OPENAI_API_VERSION: z.string().default('2024-02-15-preview'),
+
+  // Google Gemini Configuration
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().default('gemini-2.0-flash-exp'),
+  GEMINI_MAX_TOKENS: z.coerce.number().int().positive().default(4096),
+  GEMINI_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.7),
 
   // Bot Behavior
   LLM_SYSTEM_PROMPT: z.string().default(

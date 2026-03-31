@@ -72,6 +72,8 @@ export async function handleMessage(msg: TelegramMessage): Promise<void> {
   // Check if user is allowed
   if (!whitelist.isUserAllowed(userId)) {
     try {
+      const { getTelegramBot } = await import('../bot');
+      const bot = getTelegramBot();
       await bot.sendMessage(
         chatId,
         'Sorry, you are not authorized to use this bot. Please contact the administrator.'
@@ -89,7 +91,7 @@ export async function handleMessage(msg: TelegramMessage): Promise<void> {
   }
 
   // Get conversation history
-  const history = conversationService.getHistory(userId.toString());
+  conversationService.getHistory(userId.toString());
 
   // Add user message to history
   conversationService.addMessage(userId.toString(), 'user', text);
