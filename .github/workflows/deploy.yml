@@ -112,7 +112,7 @@ jobs:
 
             # Backup current deployment
             if [ -d "${{ env.DEPLOY_PATH }}/dist" ]; then
-              BACKUP_DIR="${{ env.DEPATH_PATH }}/backups/backup-$(date +%Y%m%d-%H%M%S)"
+              BACKUP_DIR="${{ env.DEPLOY_PATH }}/backups/backup-$(date +%Y%m%d-%H%M%S)"
               sudo mkdir -p "$BACKUP_DIR"
               sudo cp -r ${{ env.DEPLOY_PATH }}/dist "$BACKUP_DIR/"
               echo "✅ Backup created at $BACKUP_DIR"
